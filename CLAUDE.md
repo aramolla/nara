@@ -38,5 +38,5 @@ submit.zip(폴더명 예시)
 
 
 ## 참고 문서  
-
+- 데이터 명세 : docs/data-spec.md 참고
 
