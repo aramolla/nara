@@ -595,7 +595,7 @@ def main() -> int:
     ap.add_argument("--gpu-mem", type=float, default=0.92)
     ap.add_argument("--tp", type=int, default=1)
     ap.add_argument("--chunk", type=int, default=128, help="LLM.chat 한 번에 넘길 건수")
-    ap.add_argument("--max-chars", type=int, default=12000, help="문서 글자 수의 초기 상한(토큰 예산에 맞춰 자동 조정)")
+    ap.add_argument("--max-chars", type=int, default=14000, help="문서 글자 수의 초기 상한(토큰 예산에 맞춰 자동 조정)")
     ap.add_argument("--max-tokens", type=int, default=MAX_TOKENS)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--mock", action="store_true", help="모델 없이 흐름만 확인")
