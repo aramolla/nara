@@ -347,10 +347,13 @@ class MockRunner:
     load_seconds = 0.0
 
     def __init__(self, schema: Dict[str, Any], **_):
-        pass
+        from transformers import AutoTokenizer
+        src = MODEL_DIR if os.path.isdir(MODEL_DIR) else "google/gemma-4-26B-A4B-it"
+        self.tok = AutoTokenizer.from_pretrained(src)
 
     def count_tokens(self, messages: List[Dict[str, str]]) -> int:
-        return sum(len(m["content"]) for m in messages) // 2
+        text = "\n".join(m["content"] for m in messages)
+        return len(self.tok.encode(text))
 
     def _one(self, _messages: List[Dict[str, str]]) -> str:
         out = {v: {"위반여부": 0, "근거문구": None} for v in ITEMS}
