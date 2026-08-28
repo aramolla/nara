@@ -81,6 +81,7 @@ LAW_ALIAS: List[Tuple[str, str]] = [
     ("소프트웨어진흥법",                             "소프트웨어 진흥법"),
     ("(계약예규) 정부입찰계약집행기준",              "(계약예규) 정부 입찰·계약 집행기준"),
     ("(계약예규)정부 입찰·계약 집행기준",            "(계약예규) 정부 입찰·계약 집행기준"),
+    ("지방자치단체 입찰 및 계약집행기준",            "지방자치단체 입찰 및 계약 집행기준"),
 ]
 
 
@@ -318,30 +319,40 @@ def item_law_map(tbl: Dict[str, Dict[str, Any]], contract_law: str) -> Dict[str,
 
 # ===== R1. 법령 조문 색인 =====
 ART = re.compile(r"^제\s?\d+조(?:의\s?\d+)?\s*\(", re.M)
+CHAPTER = re.compile(r"^제\s?(\d+)장\b", re.M)
+ART_NUM_RE = re.compile(r"제\s?(\d+)조(?:의\s?(\d+))?")
+CHAPTER_REF = re.compile(r"제\s?(\d+)장")
 
 
 def load_articles(data_dir: str):
-    """법령 전문 → 조문 단위 조각. (법령명, 조문머리, 본문)"""
+    """법령 전문 → 조문 단위 조각. (법령명, 조문머리, 본문, 장번호)"""
     out = []
     for p in sorted(glob.glob(os.path.join(data_dir, "법령패키지", "법령", "*.txt"))):
         law = unicodedata.normalize("NFC", os.path.splitext(os.path.basename(p))[0])
         t = unicodedata.normalize("NFC", io.open(p, encoding="utf-8").read())
+        # 장 경계 파악: 위치 → 장번호
+        chap_cuts = [(m.start(), int(m.group(1))) for m in CHAPTER.finditer(t)]
         cuts = [m.start() for m in ART.finditer(t)]
         if not cuts:
-            out.append((law, "", t)); continue
+            out.append((law, "", t, 0)); continue
         for i, s in enumerate(cuts):
             e = cuts[i + 1] if i + 1 < len(cuts) else len(t)
             body = t[s:e].strip()
             head = body.split("\n", 1)[0][:60]
             if "다른 법령의 개정" in head or "다른 법률의 개정" in head:
                 continue
-            out.append((law, head, body))
+            # 조문 위치 이전의 마지막 장 번호
+            chap = 0
+            for cpos, cnum in chap_cuts:
+                if cpos <= s:
+                    chap = cnum
+            out.append((law, head, body, chap))
     return out
 
 
 def tokenize(s: str):
     """형태소 분석 없이 어절 + 2-gram. kiwipiepy 를 쓰면 더 나아집니다."""
-    toks = re.findall(r"[가-힣]{2,}|[A-Za-z]{2,}|\d{2,}", s)
+    toks = re.findall(r"제\d+조(?:의\d+)?|[가-힣]{2,}|[A-Za-z]{2,}|\d{2,}", s)
     grams = []
     for w in toks:
         grams.append(w)
@@ -355,14 +366,31 @@ class LawIndex:
         from rank_bm25 import BM25Okapi
         self.arts = load_articles(data_dir)
         self.bm25 = BM25Okapi([tokenize(a[2]) for a in self.arts])
+        # 법령명 → 해당 조문 인덱스 목록
+        self.law_idx: Dict[str, List[int]] = {}
+        # (법령명, 장번호) → 해당 조문 인덱스 목록
+        self.chap_idx: Dict[Tuple[str, int], List[int]] = {}
+        for i, (law, _, _, chap) in enumerate(self.arts):
+            self.law_idx.setdefault(law, []).append(i)
+            self.chap_idx.setdefault((law, chap), []).append(i)
+        self.file_names: List[str] = sorted(self.law_idx.keys(), key=len, reverse=True)
         log(f"법령 조문 {len(self.arts)}개 색인")
+
+    def extract_law_files(self, law_text: str) -> List[str]:
+        """약칭 치환된 법령 텍스트에서 매칭 파일명 추출 (긴 것 우선, 부분집합 제거)."""
+        matched = [f for f in self.file_names if f in law_text]
+        result = []
+        for name in matched:
+            if not any(name in other for other in result):
+                result.append(name)
+        return result
 
     def search(self, query: str, topk: int = 8, max_chars: int = 8000) -> str:
         sc = self.bm25.get_scores(tokenize(query))
         order = sorted(range(len(sc)), key=lambda i: -sc[i])[:topk]
         chunks, used = [], 0
         for i in order:
-            law, head, body = self.arts[i]
+            law, head, body, _ = self.arts[i]
             block = f"[{law}] {body}"
             if used + len(block) > max_chars:
                 block = block[: max(0, max_chars - used)]
@@ -371,26 +399,64 @@ class LawIndex:
             chunks.append(block); used += len(block)
         return "\n\n".join(chunks)
 
+    def _split_by_files(self, law_text: str, law_files: List[str]) -> Dict[str, str]:
+        """law_text를 파일명 기준으로 파일별 세그먼트로 분할."""
+        positions = sorted((law_text.find(f), f) for f in law_files if law_text.find(f) >= 0)
+        result = {}
+        for i, (pos, f) in enumerate(positions):
+            start = pos + len(f)
+            end = positions[i + 1][0] if i + 1 < len(positions) else len(law_text)
+            result[f] = law_text[start:end].strip()
+        return result
+
     def search_tagged(self, candidates: List[str], law_map: Dict[str, str],
                       tbl: Dict[str, Dict[str, Any]], topk: int = ITEM_TOPK,
                       max_chars: int = RAG_CHARS) -> str:
-        """항목별 개별 BM25 검색 후 태그 붙여서 반환. 중복 조문은 태그 누적."""
+        """파일별 분리 조회 후 태그 붙여서 반환. 중복 조문은 태그 누적."""
         seen: Dict[str, set] = {}   # block → {v-labels}
         order: List[str] = []
 
         for v in candidates:
-            item_name = tbl[v]['항목명']
             law_text = law_map.get(v, '')
-            query = f"{item_name} {law_text}"
-            sc = self.bm25.get_scores(tokenize(query))
-            top_idx = sorted(range(len(sc)), key=lambda i: -sc[i])[:topk]
-            for i in top_idx:
-                law, _, body = self.arts[i]
-                block = f"[{law}] {body}"
-                if block not in seen:
-                    seen[block] = set()
-                    order.append(block)
-                seen[block].add(v)
+            law_files = self.extract_law_files(law_text)
+            if not law_files:
+                # fallback: 전체 코퍼스 BM25
+                sc = self.bm25.get_scores(tokenize(law_text))
+                top_idx = sorted(range(len(self.arts)), key=lambda i: -sc[i])[:topk]
+                for i in top_idx:
+                    law, _, body, _ = self.arts[i]
+                    block = f"[{law}] {body}"
+                    if block not in seen:
+                        seen[block] = set(); order.append(block)
+                    seen[block].add(v)
+                continue
+
+            # 파일별 세그먼트 분리 후 각각 처리
+            segments = self._split_by_files(law_text, law_files)
+            for f, seg in segments.items():
+                chap_nums = [int(m.group(1)) for m in CHAPTER_REF.finditer(seg)]
+                has_art_num = bool(ART_NUM_RE.search(seg))
+                file_idx = self.law_idx.get(f, [])
+
+                if not seg or (not chap_nums and not has_art_num):
+                    # 파일명만 있고 조문·장 번호 없음 → 파일 전체
+                    top_idx = file_idx
+                elif chap_nums and not has_art_num:
+                    # 장·절만 → 해당 장 조문 전체
+                    top_idx = [i for chap in chap_nums for i in self.chap_idx.get((f, chap), [])]
+                    if not top_idx:
+                        top_idx = file_idx
+                else:
+                    # 조문 번호 있음 → 해당 파일 내 BM25
+                    sc = self.bm25.get_scores(tokenize(seg))
+                    top_idx = sorted(file_idx, key=lambda i: -sc[i])[:topk]
+
+                for i in top_idx:
+                    law, _, body, _ = self.arts[i]
+                    block = f"[{law}] {body}"
+                    if block not in seen:
+                        seen[block] = set(); order.append(block)
+                    seen[block].add(v)
 
         chunks, used = [], 0
         for block in order:
