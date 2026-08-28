@@ -58,12 +58,49 @@ EVIDENCE_MAX = 500                      # 근거 문구 셀 글자 수 상한
 QUANT = "int8_per_channel_weight_only"  # 평가 서버 양자화 설정
 
 TOPK = 8
+ITEM_TOPK = 3                           # 항목별 법령 검색 top-k
 RAG_CHARS = 8000
-QUERY_CHARS = 3000
+QUERY_CHARS = 3000                      # (legacy, 미사용)
+
+# 고시금액 근사치 (업무구분별)
+_GOSIGEUM = {'물품(내자)': 130_000_000, '일반용역': 210_000_000}
+_GOSIGEUM_DEFAULT = 150_000_000
+
+# 약칭 → 법령패키지 정식명 (긴 것 먼저)
+LAW_ALIAS: List[Tuple[str, str]] = [
+    ("국가를 당사자로하는",                         "국가를 당사자로 하는"),
+    ("국가계약법 시행규칙",                          "국가를 당사자로 하는 계약에 관한 법률 시행규칙"),
+    ("국가계약법 시행령",                            "국가를 당사자로 하는 계약에 관한 법률 시행령"),
+    ("국가계약법",                                   "국가를 당사자로 하는 계약에 관한 법률"),
+    ("지방계약 법시행규칙",                          "지방자치단체를 당사자로 하는 계약에 관한 법률 시행규칙"),
+    ("지방계약법시행규칙",                           "지방자치단체를 당사자로 하는 계약에 관한 법률 시행규칙"),
+    ("지방계약법시행령",                             "지방자치단체를 당사자로 하는 계약에 관한 법률 시행령"),
+    ("지방계약법 시행규칙",                          "지방자치단체를 당사자로 하는 계약에 관한 법률 시행규칙"),
+    ("지방계약법 시행령",                            "지방자치단체를 당사자로 하는 계약에 관한 법률 시행령"),
+    ("지방계약법",                                   "지방자치단체를 당사자로 하는 계약에 관한 법률"),
+    ("소프트웨어진흥법",                             "소프트웨어 진흥법"),
+    ("(계약예규) 정부입찰계약집행기준",              "(계약예규) 정부 입찰·계약 집행기준"),
+    ("(계약예규)정부 입찰·계약 집행기준",            "(계약예규) 정부 입찰·계약 집행기준"),
+]
+
+
+def _apply_alias(text: str) -> str:
+    for abbr, full in LAW_ALIAS:
+        text = text.replace(abbr, full)
+    return text
 
 
 def log(msg: str) -> None:
     print(f"[baseline] {msg}", file=sys.stderr, flush=True)
+
+
+def _parse_amount(val: Any) -> Optional[int]:
+    if val is None or str(val).strip() in ('미입력', '', 'None'):
+        return None
+    try:
+        return int(float(str(val).replace(',', '')))
+    except (ValueError, TypeError):
+        return None
 
 
 # ===== 2. 데이터 로더 =====
@@ -200,6 +237,85 @@ def decode_schema(data_dir: str = DATA_DIR) -> Dict[str, Any]:
     return {"type": "object", "additionalProperties": False, "required": list(ITEMS), "properties": props}
 
 
+# ===== R0. meta 기반 항목 분류 =====
+def classify_items(rec: Dict[str, Any], tbl: Dict[str, Dict[str, Any]]) -> Dict[str, List[str]]:
+    """meta 기반으로 v1~v24를 excluded/candidates로 분류.
+
+    보수적 원칙: 확실히 적용 불가한 경우만 제외, 나머지는 candidates로 유지.
+    """
+    m = rec.get('meta', {})
+    contract_law = str(m.get('적용계약법') or '')
+    nakchul      = str(m.get('낙찰방법') or '')
+    upmu         = str(m.get('업무구분') or '')
+    upjong_yn    = str(m.get('업종제한여부') or '')
+    jiyeok_yn    = str(m.get('지역제한여부') or '')
+    gongdong     = str(m.get('공동도급구성방식') or 'None')
+    amount       = _parse_amount(m.get('배정예산금액')) or _parse_amount(m.get('입찰추정가격'))
+    gosigeum     = _GOSIGEUM.get(upmu, _GOSIGEUM_DEFAULT)
+    doc_types    = {d['type'] for d in rec.get('docs', [])}
+
+    excluded: set = set()
+
+    # v22, v23: 협상 계약 조건
+    if nakchul != '협상에의한계약':
+        excluded.update(['v22', 'v23'])
+    elif contract_law != '지방계약법':
+        excluded.add('v23')
+
+    # v2, v3, v8: 업종제한 없음 → 실적제한 자체 없음
+    if upjong_yn == 'N':
+        excluded.update(['v2', 'v3', 'v8'])
+
+    # v5, v6, v7, v8: 지역제한 없음
+    if jiyeok_yn == 'N':
+        excluded.update(['v5', 'v6', 'v7', 'v8'])
+
+    # v21: 공동도급 없음
+    if gongdong in ('None', '미입력', ''):
+        excluded.add('v21')
+
+    # v9: 과업지시서 없음
+    if '과업지시서' not in doc_types:
+        excluded.add('v9')
+
+    # v20: SW 항목은 용역 전용
+    if upmu == '물품(내자)':
+        excluded.add('v20')
+
+    # v14~v18: 물품 전용 항목
+    if upmu == '일반용역':
+        excluded.update(['v14', 'v15', 'v16', 'v17', 'v18'])
+
+    # 금액 기반
+    if amount is not None:
+        if amount >= gosigeum:
+            excluded.update(['v2', 'v6', 'v7'])   # 고시금액 미만 전용
+        else:
+            excluded.update(['v4', 'v5'])           # 고시금액 이상 전용
+
+        if upmu == '물품(내자)':
+            if amount < gosigeum:
+                excluded.add('v14')                 # 고시금액 이상 전용
+            if not (100_000_000 <= amount < gosigeum):
+                excluded.update(['v15', 'v16'])     # 1억~고시금액 구간 전용
+            if amount >= 100_000_000:
+                excluded.update(['v17', 'v18'])     # 1억 미만 전용
+
+    candidates = [v for v in ITEMS if v not in excluded]
+    return {'excluded': sorted(excluded), 'candidates': candidates}
+
+
+def item_law_map(tbl: Dict[str, Dict[str, Any]], contract_law: str) -> Dict[str, str]:
+    """항목별 적용 법령 조문 텍스트 반환 (적용계약법에 맞는 것, 약칭 치환 포함)."""
+    key = '국가계약법' if '국가' in contract_law else '지방계약법'
+    result = {}
+    for v, it in tbl.items():
+        law_text = it.get(key, '')
+        if law_text and '해당 없음' not in law_text:
+            result[v] = _apply_alias(law_text)
+    return result
+
+
 # ===== R1. 법령 조문 색인 =====
 ART = re.compile(r"^제\s?\d+조(?:의\s?\d+)?\s*\(", re.M)
 
@@ -216,7 +332,10 @@ def load_articles(data_dir: str):
         for i, s in enumerate(cuts):
             e = cuts[i + 1] if i + 1 < len(cuts) else len(t)
             body = t[s:e].strip()
-            out.append((law, body.split("\n", 1)[0][:60], body))
+            head = body.split("\n", 1)[0][:60]
+            if "다른 법령의 개정" in head or "다른 법률의 개정" in head:
+                continue
+            out.append((law, head, body))
     return out
 
 
@@ -252,6 +371,42 @@ class LawIndex:
             chunks.append(block); used += len(block)
         return "\n\n".join(chunks)
 
+    def search_tagged(self, candidates: List[str], law_map: Dict[str, str],
+                      tbl: Dict[str, Dict[str, Any]], topk: int = ITEM_TOPK,
+                      max_chars: int = RAG_CHARS) -> str:
+        """항목별 개별 BM25 검색 후 태그 붙여서 반환. 중복 조문은 태그 누적."""
+        seen: Dict[str, set] = {}   # block → {v-labels}
+        order: List[str] = []
+
+        for v in candidates:
+            item_name = tbl[v]['항목명']
+            law_text = law_map.get(v, '')
+            query = f"{item_name} {law_text}"
+            sc = self.bm25.get_scores(tokenize(query))
+            top_idx = sorted(range(len(sc)), key=lambda i: -sc[i])[:topk]
+            for i in top_idx:
+                law, _, body = self.arts[i]
+                block = f"[{law}] {body}"
+                if block not in seen:
+                    seen[block] = set()
+                    order.append(block)
+                seen[block].add(v)
+
+        chunks, used = [], 0
+        for block in order:
+            tags = ','.join(sorted(seen[block]))
+            tagged = f"[{tags} 관련] {block}"
+            if used + len(tagged) > max_chars:
+                tagged = tagged[:max(0, max_chars - used)]
+            if not tagged:
+                break
+            chunks.append(tagged)
+            used += len(tagged)
+            if used >= max_chars:
+                break
+
+        return "\n\n".join(chunks)
+
 
 # ===== 4. 프롬프트 구성 =====
 SYSTEM_HEAD = """당신은 공공 입찰공고의 법령 위반 여부를 점검한다.
@@ -283,24 +438,28 @@ def build_system_prompt(tbl: Dict[str, Dict[str, Any]]) -> str:
 
 
 # ===== R2. 프롬프트에 조문 덧붙이기 =====
-def build_user_prompt(rec: Dict[str, Any], max_chars: int, idx: Optional[Any] = None) -> str:
+def build_user_prompt(rec: Dict[str, Any], max_chars: int, idx: Optional[Any] = None,
+                      candidates: Optional[List[str]] = None,
+                      law_map: Optional[Dict[str, str]] = None,
+                      tbl: Optional[Dict[str, Any]] = None) -> str:
     base = (
         f"[공고 ID] {rec['id']}\n\n"
         f"[나라장터 입력 메타]\n{format_meta(rec)}\n\n"
         f"[문서]\n{build_context(rec, max_chars=max_chars)}\n"
     )
-    if idx is None:
+    if idx is None or candidates is None or law_map is None or tbl is None:
         return base
-    q = "\n".join(d["text"] for d in rec["docs"] if d["type"] == "공고문")[:QUERY_CHARS]
-    law = idx.search(q, TOPK, RAG_CHARS)
+    law = idx.search_tagged(candidates, law_map, tbl, ITEM_TOPK, RAG_CHARS)
     return (f"[검색된 법령 조문]\n{law}\n\n" if law else "") + base
 
 
 def build_messages(rec: Dict[str, Any], system_prompt: str, max_chars: int,
-                   idx: Optional[Any] = None) -> List[Dict[str, str]]:
+                   idx: Optional[Any] = None, candidates: Optional[List[str]] = None,
+                   law_map: Optional[Dict[str, str]] = None,
+                   tbl: Optional[Dict[str, Any]] = None) -> List[Dict[str, str]]:
     return [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": build_user_prompt(rec, max_chars, idx)},
+        {"role": "user", "content": build_user_prompt(rec, max_chars, idx, candidates, law_map, tbl)},
     ]
 
 
@@ -364,10 +523,13 @@ class MockRunner:
 
 
 def fit_to_budget(rec: Dict[str, Any], system_prompt: str, runner, max_chars: int,
-                  budget: int = PROMPT_BUDGET, idx: Optional[Any] = None) -> Tuple[List[Dict[str, str]], int, int]:
+                  budget: int = PROMPT_BUDGET, idx: Optional[Any] = None,
+                  candidates: Optional[List[str]] = None,
+                  law_map: Optional[Dict[str, str]] = None,
+                  tbl: Optional[Dict[str, Any]] = None) -> Tuple[List[Dict[str, str]], int, int]:
     """설정된 토큰 예산에 맞게 문서 글자 수를 조정합니다."""
     while True:
-        msgs = build_messages(rec, system_prompt, max_chars, idx)
+        msgs = build_messages(rec, system_prompt, max_chars, idx, candidates, law_map, tbl)
         n = runner.count_tokens(msgs)
         if n <= budget or max_chars <= 2000:
             return msgs, n, max_chars
@@ -450,8 +612,10 @@ def clean_evidence(ev: Optional[str], src: str) -> str:
     return ev if ev in src else ""
 
 
-def postprocess(judgment: Dict[str, Dict[str, Any]], rec: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    """후처리: ① 부재탐지 5항목 근거 빈칸 고정 ② 위반이 아니면 근거 빈칸 ③ 근거문구 원문 대조(NFC)"""
+def postprocess(judgment: Dict[str, Dict[str, Any]], rec: Dict[str, Any],
+                excluded: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
+    """후처리: ① 부재탐지 5항목 근거 빈칸 고정 ② 위반이 아니면 근거 빈칸 ③ 근거문구 원문 대조(NFC)
+    ④ 규칙으로 제외된 항목 강제 0"""
     src = unicodedata.normalize("NFC", full_text(rec))
     out = {}
     for v in ITEMS:
@@ -459,6 +623,8 @@ def postprocess(judgment: Dict[str, Dict[str, Any]], rec: Dict[str, Any]) -> Dic
         hit = 1 if cell.get("위반여부") == 1 else 0
         ev = "" if (hit == 0 or v in ABSENCE) else clean_evidence(cell.get("근거문구"), src)
         out[v] = {"위반여부": hit, "근거문구": ev}
+    for v in (excluded or []):
+        out[v] = {"위반여부": 0, "근거문구": ""}
     return out
 
 
@@ -535,9 +701,14 @@ def run(input_path: str, out_path: str, runner_cls, limit: Optional[int], chunk:
     idx = LawIndex(data_dir)
 
     # 전건 메시지 구성(길이 예산 맞춤)
+    classify_results = []
     msgs_all, shrunk, ntok = [], 0, []
     for rec in recs:
-        m, n, mc = fit_to_budget(rec, system_prompt, runner, max_chars, idx=idx)
+        cls = classify_items(rec, tbl)
+        classify_results.append(cls)
+        lmap = item_law_map(tbl, rec.get('meta', {}).get('적용계약법', ''))
+        m, n, mc = fit_to_budget(rec, system_prompt, runner, max_chars, idx=idx,
+                                 candidates=cls['candidates'], law_map=lmap, tbl=tbl)
         msgs_all.append(m)
         ntok.append(n)
         shrunk += int(mc < max_chars)
@@ -553,13 +724,13 @@ def run(input_path: str, out_path: str, runner_cls, limit: Optional[int], chunk:
 
     # 파싱·후처리 → 행
     rows, invalid, filled, ev_kept, ev_dropped = [], 0, 0, 0, 0
-    for rec, text in zip(recs, texts):
+    for rec, text, cls in zip(recs, texts, classify_results):
         try:
             parsed, missing = parse_judgment(text)
             invalid += int(len(missing) == 24)
             filled += len(missing)
             before = sum(1 for v in ITEMS if parsed[v]["근거문구"] and parsed[v]["위반여부"] == 1 and v not in ABSENCE)
-            final = postprocess(parsed, rec)
+            final = postprocess(parsed, rec, excluded=cls['excluded'])
             kept = sum(1 for v in ITEMS if final[v]["근거문구"])
             ev_kept += kept
             ev_dropped += before - kept
