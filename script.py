@@ -51,8 +51,8 @@ META_FIELDS = [
 ]
 
 SEED = 20260826
-MAX_MODEL_LEN = 16384                   # 베이스라인 모델 컨텍스트 길이
-MAX_TOKENS = 1536                       # 구조화 출력 토큰 예산
+MAX_MODEL_LEN = 25000                   # 베이스라인 모델 컨텍스트 길이
+MAX_TOKENS = 2000                       # 구조화 출력 토큰 예산
 PROMPT_BUDGET = MAX_MODEL_LEN - MAX_TOKENS
 EVIDENCE_MAX = 500                      # 근거 문구 셀 글자 수 상한
 QUANT = "int8_per_channel_weight_only"  # 평가 서버 양자화 설정
@@ -592,7 +592,7 @@ def main() -> int:
     ap.add_argument("--gpu-mem", type=float, default=0.92)
     ap.add_argument("--tp", type=int, default=1)
     ap.add_argument("--chunk", type=int, default=128, help="LLM.chat 한 번에 넘길 건수")
-    ap.add_argument("--max-chars", type=int, default=4000, help="문서 글자 수의 초기 상한(토큰 예산에 맞춰 자동 조정)")
+    ap.add_argument("--max-chars", type=int, default=12000, help="문서 글자 수의 초기 상한(토큰 예산에 맞춰 자동 조정)")
     ap.add_argument("--max-tokens", type=int, default=MAX_TOKENS)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--mock", action="store_true", help="모델 없이 흐름만 확인")
