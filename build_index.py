@@ -4,7 +4,7 @@ build_index.py — 법령 조문 → FAISS 벡터 DB 구축
 
 실행:
   # 실제 GPU 빌드 (서버 또는 로컬 GPU 환경)
-  python3 build_index.py --embed-dir /path/to/BAAI/bge-m3
+  python3 build_index.py --embed-dir /home/user1/.cache/huggingface/hub/models--BAAI--bge-m3/snapshots/5617a9f61b028005a4858fdac845db406aefb181
 
   # PPS_EMBED_DIR 환경변수로 지정된 경우
   python3 build_index.py
@@ -96,23 +96,32 @@ def chunk_law_file(path: Path) -> list[dict]:
 
 
 def _para_split(text: str, article_id: str, src: str, law_type: str) -> list[dict]:
-    """조문 내 항(①②...) 단위 분할"""
+    """조문 내 항(①②...) 단위 분할 — 제목을 각 청크에 항상 포함"""
     parts = PARA_PAT.split(text)
     markers = PARA_PAT.findall(text)
 
-    buf = parts[0]  # 조문 제목 (항 이전 텍스트)
+    title_prefix = parts[0].strip()  # 제목 (① 이전 텍스트)
     result = []
+    buf = ""  # 항 내용만 누적 (제목은 flush 시 앞에 붙임)
 
     for marker, part in zip(markers, parts[1:]):
-        segment = marker + part
-        if len(buf) + len(segment) > MAX_CHUNK_CHARS and len(buf) >= MIN_CHUNK_CHARS:
-            result.append(_make(buf.strip(), article_id, src, law_type))
-            buf = segment
+        segment = marker + part.rstrip()
+        full = (title_prefix + "\n" + buf + segment).strip()
+
+        if buf and len(full) > MAX_CHUNK_CHARS:
+            # 현재까지 buf flush — 제목 항상 앞에 붙임
+            chunk_text = (title_prefix + "\n" + buf).strip()
+            if len(chunk_text) >= MIN_CHUNK_CHARS:
+                result.append(_make(chunk_text, article_id, src, law_type))
+            buf = segment  # 다음 청크 시작
         else:
             buf += segment
 
-    if buf.strip() and len(buf.strip()) >= MIN_CHUNK_CHARS:
-        result.append(_make(buf.strip(), article_id, src, law_type))
+    # 마지막 남은 buf flush
+    if buf.strip():
+        chunk_text = (title_prefix + "\n" + buf).strip()
+        if len(chunk_text) >= MIN_CHUNK_CHARS:
+            result.append(_make(chunk_text, article_id, src, law_type))
 
     return result or [_make(text[:MAX_CHUNK_CHARS], article_id, src, law_type)]
 
