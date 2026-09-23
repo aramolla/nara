@@ -35,7 +35,6 @@ submit.zip(폴더명 예시)
 
 ## 명령어  
 - mock 검증 : python script.py --mock  
-- 콘다 가상환경 활성화 : conda activate nara  
 
 
 ## 참고 문서  
