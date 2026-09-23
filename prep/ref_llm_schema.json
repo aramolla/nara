@@ -1,0 +1,39 @@
+{
+  "type": "object",
+  "properties": {
+    "refs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "expression": {
+            "type": "string"
+          },
+          "law": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "follow": {
+            "type": "boolean"
+          },
+          "context": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expression",
+          "law",
+          "follow",
+          "context"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "refs"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,66 @@
+{
+  "type": "object",
+  "properties": {
+    "article": {
+      "type": "string"
+    },
+    "article_title": {
+      "type": "string"
+    },
+    "law": {
+      "type": "string"
+    },
+    "paragraph": {
+      "type": "integer"
+    },
+    "refs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "expression": {
+            "type": "string"
+          },
+          "article": {
+            "type": "string"
+          },
+          "paragraphs": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "law": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "follow": {
+            "type": "boolean"
+          },
+          "context": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expression",
+          "article",
+          "paragraphs",
+          "law",
+          "follow",
+          "context"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "article",
+    "article_title",
+    "law",
+    "paragraph",
+    "refs"
+  ],
+  "additionalProperties": false
+}
