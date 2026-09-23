@@ -9,12 +9,17 @@ build_index.py — 법령 조문 → FAISS 벡터 DB 구축
   # PPS_EMBED_DIR 환경변수로 지정된 경우
   python3 build_index.py
 
+  # 청킹만 확인 (임베딩·저장 없음)
+  python3 build_index.py --dry-run
+
   # 구조 확인용 mock (임베딩 없이)
   python3 build_index.py --mock
 
 출력:
   open/model/law_index.faiss   — FAISS IndexFlatIP (dim=1024, 코사인 유사도)
-  open/model/law_chunks.json   — 청크 메타데이터 {text, article, source, law_type}
+  open/model/law_chunks.json   — 청크 메타데이터 {text, article, article_no, article_title, paragraph,
+                                 items, chapter, deleted, seq, seq_total, prefix_len,
+                                 chunk_id, source, law_type}
 """
 
 import argparse
@@ -40,7 +45,7 @@ INDEX_FILE = OUT_DIR / "law_index.faiss"
 
 # ── 청킹 설정 ──────────────────────────────────────────────────────
 MAX_CHUNK_CHARS = 512   # 조문 청크 최대 길이 (초과 시 항 단위 분할)
-MIN_CHUNK_CHARS = 20    # 너무 짧은 조문 제외
+MIN_CHUNK_CHARS = 20    # (고정 크기 분할용) 너무 짧은 조각 제외
 
 ARTICLE_PAT = re.compile(r'^(제\d+조(?:의\d+)?(?:\([^)]+\))?)', re.MULTILINE)
 PARA_PAT    = re.compile(r'[①②③④⑤⑥⑦⑧⑨⑩]')
@@ -57,92 +62,193 @@ def detect_law_type(filename: str) -> str:
     return "기타"
 
 
-# ── 조문 단위 청킹 ─────────────────────────────────────────────────
-def chunk_law_file(path: Path) -> list[dict]:
-    """
-    법령 텍스트 파일을 조문 단위로 분리.
-    조문이 MAX_CHUNK_CHARS 초과 시 항(①②...) 단위로 재분할.
-    """
-    raw = path.read_text(encoding="utf-8")
-    text = unicodedata.normalize("NFC", raw)
-    law_type = detect_law_type(path.name)
+# ── 항 단위 청킹 ───────────────────────────────────────────────────
+# 조문(제N조)으로 먼저 나누고, 각 조문을 항(①②…) → 호(1. 2. …) 단위 청크로 만든다.
+# 삭제된 조·항·호, [본조신설 …] 같은 주석도 원문 그대로 남긴다 (deleted 메타데이터로 구분).
+#  - 항이 없는 조문은 조문 전체가 1청크 (paragraph="")
+#  - 항(또는 항 없는 조문)이 MAX_CHUNK_CHARS 초과 시 호(1. 2. …) 단위로 묶어 분할,
+#    각 조각 앞에 "조문 제목 + 항 첫 문장"을 붙여 문맥 유지 (잘라서 버리는 내용 없음)
+#  - 같은 조문의 청크는 article / article_no 메타데이터로 묶인다
+INCLUDE_BUCHIK = False  # 부칙(개정 이력·경과조치) 제외
 
-    # 헤더(법령명, 공포일 등) 제거
+PARA_CHARS   = "①-⑳"                              # ①~⑳
+PARA_START   = re.compile(rf"^[ \t]*(?=[{PARA_CHARS}])", re.MULTILINE)  # 줄 맨 앞 항 기호만 (문장 중간 ①②는 열거라 제외)
+ITEM_START   = re.compile(r"^[ \t]*(\d+)(?:의\d+)?\.\s", re.MULTILINE)  # 호: "1. ", "2의2. "
+HEADING_LINE = re.compile(r"^제\d+(?:장|절|관)(?:의\d+)?\s.*$", re.MULTILINE)
+BUCHIK_LINE  = re.compile(r"^부칙(?:\s|<|\(|$)", re.MULTILINE)
+BLANK_LINES  = re.compile(r"\n(?:[ \t　]*\n)+")
+ARTICLE_HEAD = re.compile(r"^(제\d+조(?:의\d+)?)\s*(?:\(([^)]*)\))?")
+
+
+def _clean(s: str) -> str:
+    s = s.replace("<![CDATA[", "").replace("]]>", "")
+    s = BLANK_LINES.sub("\n", s)          # 빈 줄 / 공백만 있는 줄 제거
+    return s.strip()
+
+
+ITEM_LABEL = re.compile(r"^[ \t]*(\d+(?:의\d+)?)\.\s")                  # "8의2. " → "8의2"
+MOK_START  = re.compile(r"^[ \t]*([가-하])\.\s", re.MULTILINE)          # 목: "가. "
+AMEND_TAG  = re.compile(r"\s*<(?:개정|신설|전문개정|제목개정|본문개정|단서신설|타법개정)[^>\n]*>")
+
+
+def iter_articles(path: Path):
+    """(정제된 조문 텍스트, 장 제목) 을 원문 순서대로 반환. 조문이 없으면 아무것도 반환 안 함."""
+    text = unicodedata.normalize("NFC", path.read_text(encoding="utf-8"))
     sep = text.find("=" * 10)
     body = text[sep:] if sep != -1 else text
-
-    # 조문 위치 탐지
-    positions = [(m.start(), m.group()) for m in ARTICLE_PAT.finditer(body)]
-
+    body = body.lstrip("=").lstrip("\n")
+    if not INCLUDE_BUCHIK:
+        m = BUCHIK_LINE.search(body)
+        if m:
+            body = body[:m.start()]
+    positions = [m.start() for m in ARTICLE_PAT.finditer(body)]
+    headings = [(m.start(), m.group().strip()) for m in HEADING_LINE.finditer(body)]
+    for i, start in enumerate(positions):
+        end = positions[i + 1] if i + 1 < len(positions) else len(body)
+        chapter = next((h for p, h in reversed(headings) if p < start), "")
+        yield _clean(HEADING_LINE.sub("", body[start:end])), chapter
     if not positions:
-        # 조문 구분이 없는 파일(고시 등) — 고정 크기로 분할
-        return _fixed_split(body, path.name, law_type)
+        yield None, _clean(body)
 
+
+def chunk_law_file(path: Path) -> list[dict]:
+    law_type = detect_law_type(path.name)
     chunks = []
-    for i, (start, article_id) in enumerate(positions):
-        end = positions[i + 1][0] if i + 1 < len(positions) else len(body)
-        content = body[start:end].strip()
-
-        if len(content) < MIN_CHUNK_CHARS:
-            continue
-
-        if len(content) <= MAX_CHUNK_CHARS:
-            chunks.append(_make(content, article_id, path.name, law_type))
-        else:
-            # 항(①②③) 기준으로 재분할
-            chunks.extend(_para_split(content, article_id, path.name, law_type))
-
+    for article_text, chapter in iter_articles(path):
+        if article_text is None:                       # 조문 구분 없는 파일
+            return _fixed_split(chapter, path.name, law_type)
+        chunks.extend(_split_article(article_text, chapter, path.name, law_type))
     return chunks
 
 
-def _para_split(text: str, article_id: str, src: str, law_type: str) -> list[dict]:
-    """조문 내 항(①②...) 단위 분할 — 제목을 각 청크에 항상 포함"""
-    parts = PARA_PAT.split(text)
-    markers = PARA_PAT.findall(text)
+def _split_article(text: str, chapter: str, src: str, law_type: str) -> list[dict]:
+    m = ARTICLE_HEAD.match(text)
+    article_no = m.group(1)
+    article_title = (m.group(2) or "").strip()
+    header = f"{article_no}({article_title})" if article_title else article_no
+    rest = text[m.end():].strip()
 
-    title_prefix = parts[0].strip()  # 제목 (① 이전 텍스트)
-    result = []
-    buf = ""  # 항 내용만 누적 (제목은 flush 시 앞에 붙임)
+    meta = dict(article=header, article_no=article_no, article_title=article_title,
+                chapter=chapter, source=src, law_type=law_type)
 
-    for marker, part in zip(markers, parts[1:]):
-        segment = marker + part.rstrip()
-        full = (title_prefix + "\n" + buf + segment).strip()
+    # 항 경계: 줄 맨 앞의 ①② (조문 제목 바로 뒤에 붙은 ①도 rest 맨 앞이라 포함)
+    # 삭제된 조문·항도 그대로 청크로 남긴다 (deleted=True 로 표시)
+    starts = [p.end() for p in PARA_START.finditer(rest)]
+    units = []                                 # (항 기호, 본문)
+    if not starts:
+        units.append(("", rest))
+    else:
+        lead = rest[:starts[0]].strip()        # 제목과 ① 사이 본문 (드묾)
+        if lead:
+            units.append(("", lead))
+        for j, s in enumerate(starts):
+            e = starts[j + 1] if j + 1 < len(starts) else len(rest)
+            para = rest[s:e].strip()
+            units.append((para[0], para))
 
-        if buf and len(full) > MAX_CHUNK_CHARS:
-            # 현재까지 buf flush — 제목 항상 앞에 붙임
-            chunk_text = (title_prefix + "\n" + buf).strip()
-            if len(chunk_text) >= MIN_CHUNK_CHARS:
-                result.append(_make(chunk_text, article_id, src, law_type))
-            buf = segment  # 다음 청크 시작
-        else:
-            buf += segment
+    out = []
+    for paragraph, body in units:
+        out += _split_unit(header, body, paragraph, meta)
+    for seq, c in enumerate(out, 1):
+        c["seq"] = seq                         # 조문 안 순서 (1부터)
+        c["seq_total"] = len(out)
+    return out
 
-    # 마지막 남은 buf flush
-    if buf.strip():
-        chunk_text = (title_prefix + "\n" + buf).strip()
-        if len(chunk_text) >= MIN_CHUNK_CHARS:
-            result.append(_make(chunk_text, article_id, src, law_type))
 
-    return result or [_make(text[:MAX_CHUNK_CHARS], article_id, src, law_type)]
+def _split_lead(body: str, pat: re.Pattern):
+    """본문을 [머리말, 하위단위1, 하위단위2, ...] 로 순서대로 자름 (내용 누락 없음)."""
+    pos = [m.start() for m in pat.finditer(body)]
+    if not pos:
+        return body.strip(), []
+    lead = body[:pos[0]].strip()
+    subs = [body[p:(pos[k + 1] if k + 1 < len(pos) else len(body))].strip()
+            for k, p in enumerate(pos)]
+    return lead, subs
+
+
+def _pack(pieces: list[tuple[str, str]], first_prefix: str, cont_prefix: str) -> list[tuple[str, list]]:
+    """(라벨, 텍스트) 조각들을 순서대로 MAX_CHUNK_CHARS 이내로 묶음 (목 분할에만 사용)."""
+    groups, buf, prefix = [], [], first_prefix
+    for p in pieces:
+        size = len(prefix) + sum(len(t) + 1 for _, t in buf) + len(p[1]) + 1
+        if buf and size > MAX_CHUNK_CHARS:
+            groups.append((prefix, buf))
+            buf, prefix = [], cont_prefix
+        buf.append(p)
+    if buf:
+        groups.append((prefix, buf))
+    return groups
+
+
+def _range(labels: list[str]) -> str:
+    labels = [l for l in labels if l]
+    if not labels:
+        return ""
+    return labels[0] if len(labels) == 1 else f"{labels[0]}~{labels[-1]}"
+
+
+DELETED_ONLY = re.compile(
+    rf"^(?:[{PARA_CHARS}]|\d+(?:의\d+)?\.|[가-하]\.)?\s*삭제\s*<[^>\n]*>(?:\s*\[[^\]\n]*\])*\s*$")
+
+
+def _split_unit(header: str, body: str, paragraph: str, meta: dict) -> list[dict]:
+    """조문 제목 + 항(또는 항 없는 조문) 본문을 청크로.
+      - 항이 MAX_CHUNK_CHARS 이내 → 항 1개 = 청크 1개
+      - 항이 길면 → 호 1개 = 청크 1개 (첫 호 청크에 항 첫 문장 원문 포함)
+      - 호 하나도 길면 → 그 호만 목(가. 나.) 단위로 순서대로 묶어 분할
+    각 청크 text = 문맥 prefix + 원문 조각. prefix_len 이후가 원문."""
+    def make(prefix, text_parts, items):
+        content = "\n".join(text_parts)
+        return _make(prefix + "\n" + content, paragraph=paragraph, items=items,
+                     deleted=bool(DELETED_ONLY.match(content)),
+                     prefix_len=len(prefix) + 1, **meta)
+
+    if len(header) + 1 + len(body) <= MAX_CHUNK_CHARS:
+        return [make(header, [body], "")]
+
+    lead, items = _split_lead(body, ITEM_START)
+    if not items:                               # 호가 없으면 더 쪼갤 기준 없음
+        return [make(header, [body], "")]
+
+    # 두 번째 호부터 앞에 붙일 문맥: 제목 + 항 첫 문장(개정 이력 태그 뺀 짧은 버전)
+    short_lead = AMEND_TAG.sub("", lead).strip()
+    cont_prefix = f"{header}\n{short_lead} (계속)" if short_lead else header
+
+    out = []
+    for k, it in enumerate(items):
+        label = ITEM_LABEL.match(it).group(1)
+        prefix = header if k == 0 else cont_prefix
+        parts = ([lead] if k == 0 and lead else []) + [it]
+        if len(prefix) + 1 + len("\n".join(parts)) <= MAX_CHUNK_CHARS:
+            out.append(make(prefix, parts, label))
+            continue
+        # 호 하나가 너무 김 → 목 단위로 분할
+        it_lead, moks = _split_lead(it, MOK_START)
+        if not moks:
+            out.append(make(prefix, parts, label))
+            continue
+        mok_prefix = f"{cont_prefix}\n{AMEND_TAG.sub('', it_lead).strip()} (계속)"
+        pieces = ([("", lead)] if k == 0 and lead else []) + [(label, it_lead)] + [
+            (f"{label}{MOK_START.match(x).group(1)}", x) for x in moks]
+        for pfx, grp in _pack(pieces, prefix, mok_prefix):
+            out.append(make(pfx, [t for _, t in grp], _range([l for l, _ in grp])))
+    return out
 
 
 def _fixed_split(text: str, src: str, law_type: str, size: int = 400) -> list[dict]:
     """조문 구분 없는 파일용 고정 크기 분할"""
     step = size - 50  # 50자 overlap
     return [
-        _make(text[i:i + size].strip(), "기타", src, law_type)
+        _make(text[i:i + size].strip(), article="기타", source=src, law_type=law_type)
         for i in range(0, len(text), step)
         if len(text[i:i + size].strip()) >= MIN_CHUNK_CHARS
     ]
 
 
-def _make(text: str, article_id: str, src: str, law_type: str) -> dict:
-    return {
-        "text": text,
-        "article": article_id,
-        "source": src,
-        "law_type": law_type,
-    }
+def _make(text: str, article: str, source: str, law_type: str, **extra) -> dict:
+    d = {"text": text, "article": article, "source": source, "law_type": law_type}
+    d.update(extra)
+    return d
 
 
 def load_all_chunks() -> list[dict]:
@@ -159,14 +265,24 @@ def load_all_chunks() -> list[dict]:
         all_chunks.extend(chunks)
 
     from collections import Counter
+    empty = [i for i, c in enumerate(all_chunks) if not c["text"].strip()]
+    if empty:
+        sys.exit(f"[ERROR] 빈 청크 {len(empty)}개 (idx 예: {empty[:5]})")
+    for i, c in enumerate(all_chunks):
+        c["chunk_id"] = i                      # FAISS 벡터 번호와 동일
+
     dist = Counter(c["law_type"] for c in all_chunks)
+    lens = [len(c["text"]) for c in all_chunks]
     print(f"\n총 {len(all_chunks)}청크  |  {dict(dist)}")
+    print(f"  길이 평균 {sum(lens)/len(lens):.0f}자 / 최대 {max(lens)}자 / "
+          f"{MAX_CHUNK_CHARS}자 초과 {sum(l > MAX_CHUNK_CHARS for l in lens)}개")
+    print(f"  삭제 조항 청크(deleted=True) {sum(1 for c in all_chunks if c.get('deleted'))}개")
     return all_chunks
 
 
 # ── GPU 임베딩 ─────────────────────────────────────────────────────
 def embed_chunks(chunks: list[dict], embed_dir: str, mock: bool = False,
-                 batch_size: int = 64, fp16: bool = True) -> "np.ndarray":
+                 batch_size: int = 64, fp16: bool = True, max_length: int = 1024) -> "np.ndarray":
     """
     bge-m3로 청크 텍스트 임베딩.
     GPU 사용 가능 시 자동으로 CUDA 사용.
@@ -204,7 +320,7 @@ def embed_chunks(chunks: list[dict], embed_dir: str, mock: bool = False,
         out = model.encode(
             texts,
             batch_size=batch_size,
-            max_length=512,
+            max_length=max_length,
             return_dense=True,
             return_sparse=False,
             return_colbert_vecs=False,
@@ -217,6 +333,7 @@ def embed_chunks(chunks: list[dict], embed_dir: str, mock: bool = False,
         print("[EMB] FlagEmbedding 없음 → sentence-transformers 사용")
         from sentence_transformers import SentenceTransformer
         model = SentenceTransformer(embed_dir, device=device)
+        model.max_seq_length = max_length
         if fp16 and device == "cuda":
             model.half()
         t0 = time.time()
@@ -301,6 +418,10 @@ def main():
                     help="fp16 비활성화 (CPU 또는 fp16 미지원 GPU용)")
     ap.add_argument("--mock", action="store_true",
                     help="랜덤 임베딩으로 구조만 확인 (모델 없이 테스트)")
+    ap.add_argument("--max-length", type=int, default=1024,
+                    help="임베딩 최대 토큰 길이 (bge-m3 최대 8192, 기본: 1024 — 긴 청크 잘림 방지)")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="청킹만 하고 통계 출력 (임베딩·저장 안 함)")
     ap.add_argument("--test", action="store_true",
                     help="저장된 인덱스 검색 테스트")
     args = ap.parse_args()
@@ -316,6 +437,9 @@ def main():
     # 1. 청킹
     print("\n[1/3] 법령 조문 청킹")
     chunks = load_all_chunks()
+    if args.dry_run:
+        print("\n[DRY-RUN] 청킹만 확인하고 종료")
+        return
 
     # 2. 임베딩
     print("\n[2/3] bge-m3 임베딩")
@@ -325,6 +449,7 @@ def main():
         mock=args.mock,
         batch_size=args.batch_size,
         fp16=not args.no_fp16,
+        max_length=args.max_length,
     )
 
     # 3. FAISS 저장
