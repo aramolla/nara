@@ -1,0 +1,166 @@
+{
+ "total": 6557,
+ "files": [
+  {
+   "file": "01_계약예규_공동계약운용요령.json",
+   "source": "(계약예규) 공동계약운용요령.txt",
+   "count": 43,
+   "chunk_id_start": 0,
+   "chunk_id_end": 42
+  },
+  {
+   "file": "02_계약예규_정부_입찰_계약_집행기준.json",
+   "source": "(계약예규) 정부 입찰·계약 집행기준.txt",
+   "count": 403,
+   "chunk_id_start": 43,
+   "chunk_id_end": 445
+  },
+  {
+   "file": "03_국가를_당사자로_하는_계약에_관한_법률_등의_재정경제부장관이_정하는_고시금액.json",
+   "source": "국가를 당사자로 하는 계약에 관한 법률 등의 재정경제부장관이 정하는 고시금액.txt",
+   "count": 5,
+   "chunk_id_start": 446,
+   "chunk_id_end": 450
+  },
+  {
+   "file": "04_국가를_당사자로_하는_계약에_관한_법률_시행규칙.json",
+   "source": "국가를 당사자로 하는 계약에 관한 법률 시행규칙.txt",
+   "count": 269,
+   "chunk_id_start": 451,
+   "chunk_id_end": 719
+  },
+  {
+   "file": "05_국가를_당사자로_하는_계약에_관한_법률_시행령.json",
+   "source": "국가를 당사자로 하는 계약에 관한 법률 시행령.txt",
+   "count": 584,
+   "chunk_id_start": 720,
+   "chunk_id_end": 1303
+  },
+  {
+   "file": "06_국가를_당사자로_하는_계약에_관한_법률.json",
+   "source": "국가를 당사자로 하는 계약에 관한 법률.txt",
+   "count": 114,
+   "chunk_id_start": 1304,
+   "chunk_id_end": 1417
+  },
+  {
+   "file": "07_소상공인기본법_시행령.json",
+   "source": "소상공인기본법 시행령.txt",
+   "count": 51,
+   "chunk_id_start": 1418,
+   "chunk_id_end": 1468
+  },
+  {
+   "file": "08_소상공인기본법.json",
+   "source": "소상공인기본법.txt",
+   "count": 86,
+   "chunk_id_start": 1469,
+   "chunk_id_end": 1554
+  },
+  {
+   "file": "09_소프트웨어_진흥법_시행령.json",
+   "source": "소프트웨어 진흥법 시행령.txt",
+   "count": 223,
+   "chunk_id_start": 1555,
+   "chunk_id_end": 1777
+  },
+  {
+   "file": "10_소프트웨어_진흥법.json",
+   "source": "소프트웨어 진흥법.txt",
+   "count": 260,
+   "chunk_id_start": 1778,
+   "chunk_id_end": 2037
+  },
+  {
+   "file": "11_중소_소프트웨어사업자의_사업_참여_지원에_관한_지침.json",
+   "source": "중소 소프트웨어사업자의 사업 참여 지원에 관한 지침.txt",
+   "count": 63,
+   "chunk_id_start": 2038,
+   "chunk_id_end": 2100
+  },
+  {
+   "file": "12_중소기업기본법_시행령.json",
+   "source": "중소기업기본법 시행령.txt",
+   "count": 119,
+   "chunk_id_start": 2101,
+   "chunk_id_end": 2219
+  },
+  {
+   "file": "13_중소기업기본법.json",
+   "source": "중소기업기본법.txt",
+   "count": 119,
+   "chunk_id_start": 2220,
+   "chunk_id_end": 2338
+  },
+  {
+   "file": "14_중소기업자간_경쟁제품_및_공사용자재_직접구매_대상_품목_지정_내역.json",
+   "source": "중소기업자간 경쟁제품 및 공사용자재 직접구매 대상 품목 지정 내역.txt",
+   "count": 2,
+   "chunk_id_start": 2339,
+   "chunk_id_end": 2340
+  },
+  {
+   "file": "15_중소기업자간_경쟁제품_직접생산_확인기준.json",
+   "source": "중소기업자간 경쟁제품 직접생산 확인기준.txt",
+   "count": 58,
+   "chunk_id_start": 2341,
+   "chunk_id_end": 2398
+  },
+  {
+   "file": "16_중소기업제품_구매촉진_및_판로지원에_관한_법률_시행규칙.json",
+   "source": "중소기업제품 구매촉진 및 판로지원에 관한 법률 시행규칙.txt",
+   "count": 62,
+   "chunk_id_start": 2399,
+   "chunk_id_end": 2460
+  },
+  {
+   "file": "17_중소기업제품_구매촉진_및_판로지원에_관한_법률_시행령.json",
+   "source": "중소기업제품 구매촉진 및 판로지원에 관한 법률 시행령.txt",
+   "count": 205,
+   "chunk_id_start": 2461,
+   "chunk_id_end": 2665
+  },
+  {
+   "file": "18_중소기업제품_구매촉진_및_판로지원에_관한_법률.json",
+   "source": "중소기업제품 구매촉진 및 판로지원에 관한 법률.txt",
+   "count": 198,
+   "chunk_id_start": 2666,
+   "chunk_id_end": 2863
+  },
+  {
+   "file": "19_지방자치단체_입찰_및_계약_집행기준.json",
+   "source": "지방자치단체 입찰 및 계약 집행기준.txt",
+   "count": 1402,
+   "chunk_id_start": 2864,
+   "chunk_id_end": 4265
+  },
+  {
+   "file": "20_지방자치단체_입찰시_낙찰자_결정기준.json",
+   "source": "지방자치단체 입찰시 낙찰자 결정기준.txt",
+   "count": 1201,
+   "chunk_id_start": 4266,
+   "chunk_id_end": 5466
+  },
+  {
+   "file": "21_지방자치단체를_당사자로_하는_계약에_관한_법률_시행규칙.json",
+   "source": "지방자치단체를 당사자로 하는 계약에 관한 법률 시행규칙.txt",
+   "count": 257,
+   "chunk_id_start": 5467,
+   "chunk_id_end": 5723
+  },
+  {
+   "file": "22_지방자치단체를_당사자로_하는_계약에_관한_법률_시행령.json",
+   "source": "지방자치단체를 당사자로 하는 계약에 관한 법률 시행령.txt",
+   "count": 648,
+   "chunk_id_start": 5724,
+   "chunk_id_end": 6371
+  },
+  {
+   "file": "23_지방자치단체를_당사자로_하는_계약에_관한_법률.json",
+   "source": "지방자치단체를 당사자로 하는 계약에 관한 법률.txt",
+   "count": 185,
+   "chunk_id_start": 6372,
+   "chunk_id_end": 6556
+  }
+ ]
+}
